@@ -1,4 +1,5 @@
 # app.py - Streamlit UI for Layers Scanner, mobile-first responsive
+import json
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -6,6 +7,34 @@ from html import escape
 
 import pandas as pd
 import streamlit as st
+
+# Persistence: last scan saved here so the page survives Safari backgrounding
+LAST_SCAN_FILE = "last_scan.json"
+
+
+def _save_last_scan(results, edges, skipped, last_run):
+    try:
+        with open(LAST_SCAN_FILE, "w") as f:
+            json.dump(
+                {
+                    "results": results,
+                    "edges": edges,
+                    "skipped": skipped,
+                    "last_run": last_run,
+                },
+                f,
+                default=str,
+            )
+    except Exception:
+        pass
+
+
+def _load_last_scan():
+    try:
+        with open(LAST_SCAN_FILE) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
 
 # Push secrets into env BEFORE importing scanner_core (it reads env at import time)
 for k in ("TRONGRID_API_KEY", "MISTTRACK_API_KEY"):
@@ -114,15 +143,22 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# One-time init
+# One-time init: load persisted last scan so reconnects show prior results
 if "started" not in st.session_state:
     sc._db_start_writer()
     sc._load_from_db_into_memory()
     st.session_state.started = True
-    st.session_state.results = []
-    st.session_state.skipped = []
-    st.session_state.edges = []
-    st.session_state.last_run = None
+    prev = _load_last_scan()
+    if prev:
+        st.session_state.results = prev.get("results", [])
+        st.session_state.skipped = prev.get("skipped", [])
+        st.session_state.edges = prev.get("edges", [])
+        st.session_state.last_run = prev.get("last_run")
+    else:
+        st.session_state.results = []
+        st.session_state.skipped = []
+        st.session_state.edges = []
+        st.session_state.last_run = None
 
 # ---------- controls ----------
 with st.form("scan"):
@@ -190,15 +226,24 @@ if submit:
                 results[addr] = r
             with interleaved_lock:
                 interleaved[addr] = r
-            prog.progress(min(1.0, idx / max(1, total)))
+            # NOTE: do NOT touch Streamlit widgets from worker threads.
+            # Streamlit raises MissingScriptRunContext when it happens.
 
         with ThreadPoolExecutor(max_workers=sc.MISTRACK_WORKERS) as pool:
             futs = [pool.submit(_one, a, i) for i, a in enumerate(addresses, 1)]
+            done = 0
             for f in as_completed(futs):
                 try:
                     f.result()
                 except Exception as e:
-                    log(f"  MistTrack worker error: {e}")
+                    msg = repr(e) if not str(e) else str(e)
+                    log(f"  MistTrack worker error: {msg}")
+                done += 1
+                # Safe: progress update from main thread (the as_completed loop runs here)
+                try:
+                    prog.progress(min(1.0, done / max(1, total)))
+                except Exception:
+                    pass
         return results
 
     with sc._cache_lock:
@@ -236,6 +281,8 @@ if submit:
     st.session_state.skipped = skipped
     st.session_state.edges = edges
     st.session_state.last_run = pd.Timestamp.utcnow().isoformat(timespec="seconds")
+    # Persist so the page survives Safari backgrounding / tab kills
+    _save_last_scan(all_results, edges, skipped, st.session_state.last_run)
 
 # ---------- render ----------
 results = st.session_state.get("results", [])
@@ -420,7 +467,18 @@ d2.download_button(
     mime="text/csv", use_container_width=True,
 )
 
+if st.button("✕ Clear last scan", use_container_width=True):
+    try:
+        os.remove(LAST_SCAN_FILE)
+    except FileNotFoundError:
+        pass
+    for k in ("results", "edges", "skipped", "last_run"):
+        st.session_state.pop(k, None)
+    st.rerun()
+
 st.markdown(
-    f"<div class='lastupd'>Last updated: {escape(str(st.session_state.get('last_run', '—')))}</div>",
+    f"<div class='lastupd'>Last updated: {escape(str(st.session_state.get('last_run', '—')))}"
+    f" · Tip: keep this tab in the foreground while scanning. "
+    f"On iOS, switching apps for &gt;30s will pause the connection and the scan stops.</div>",
     unsafe_allow_html=True,
 )
