@@ -8,18 +8,46 @@ from html import escape
 import pandas as pd
 import streamlit as st
 
-# Persistence: last scan saved here so the page survives Safari backgrounding
-LAST_SCAN_FILE = "last_scan.json"
+# --- Resource-conscious limits for Streamlit Community Cloud free tier ---
+# 1 GB RAM, 1 CPU, ephemeral disk. Tuned for ~5 scans/day x ~500 wallets.
+HARD_WALLET_CAP = 800          # absolute ceiling per scan (overrides scanner_core if higher)
+DAILY_SCAN_CAP  = 8            # soft cap; UI warns past this
+LAST_SCAN_FILE  = "last_scan.json"
+DAILY_FILE      = "daily_counter.json"
+LOG_MAX_LINES   = 300          # keep memory bounded
+
+
+# --- Persistence: last scan ----------------------------------------------
+def _trim_for_persist(r):
+    """Keep only fields the UI actually renders. Drops raw API payloads to save disk + RAM."""
+    return {
+        "address": r.get("address", ""),
+        "name": r.get("name", ""),
+        "layer": r.get("layer"),
+        "risk_level": r.get("risk_level"),
+        "score": r.get("score"),
+        "error": r.get("error"),
+        "detail_list": r.get("detail_list") or [],
+        "use_platform": r.get("use_platform") or {},
+        "malicious_event": r.get("malicious_event") or {},
+        "sent_to": r.get("sent_to", ""),
+        "last_tx": r.get("last_tx", "-"),
+        "amount_usdt": r.get("amount_usdt"),
+    }
 
 
 def _save_last_scan(results, edges, skipped, last_run):
     try:
+        slim_results = [_trim_for_persist(r) for r in results]
+        # Trim edges/skipped to what we actually display
+        slim_edges = edges[:5000]
+        slim_skipped = skipped[:2000]
         with open(LAST_SCAN_FILE, "w") as f:
             json.dump(
                 {
-                    "results": results,
-                    "edges": edges,
-                    "skipped": skipped,
+                    "results": slim_results,
+                    "edges": slim_edges,
+                    "skipped": slim_skipped,
                     "last_run": last_run,
                 },
                 f,
@@ -35,6 +63,34 @@ def _load_last_scan():
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return None
+
+
+# --- Daily scan counter ---------------------------------------------------
+def _today_str():
+    return pd.Timestamp.utcnow().strftime("%Y-%m-%d")
+
+
+def _load_daily():
+    try:
+        with open(DAILY_FILE) as f:
+            d = json.load(f)
+        if d.get("date") != _today_str():
+            return {"date": _today_str(), "scans": 0, "wallets": 0}
+        return d
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {"date": _today_str(), "scans": 0, "wallets": 0}
+
+
+def _bump_daily(wallets_scanned):
+    d = _load_daily()
+    d["scans"] = d.get("scans", 0) + 1
+    d["wallets"] = d.get("wallets", 0) + int(wallets_scanned or 0)
+    try:
+        with open(DAILY_FILE, "w") as f:
+            json.dump(d, f)
+    except Exception:
+        pass
+    return d
 
 # Push secrets into env BEFORE importing scanner_core (it reads env at import time)
 for k in ("TRONGRID_API_KEY", "MISTTRACK_API_KEY"):
@@ -182,7 +238,10 @@ logs: list[str] = []
 
 def log(msg: str):
     logs.append(str(msg))
-    log_placeholder.code("\n".join(logs[-400:]), language="text")
+    # Keep buffer bounded to limit memory
+    if len(logs) > LOG_MAX_LINES * 2:
+        del logs[: len(logs) - LOG_MAX_LINES]
+    log_placeholder.code("\n".join(logs[-LOG_MAX_LINES:]), language="text")
 
 
 # ---------- scan ----------
@@ -190,6 +249,16 @@ if submit:
     sc.MAX_LAYERS = depth
     sc.ACTIVITY_WINDOW_HOURS = int(window_h)
     sc.MIN_USDT_AMOUNT = float(min_usdt)
+    # Enforce hard cap regardless of scanner_core default
+    sc.MAX_TOTAL_WALLETS = min(sc.MAX_TOTAL_WALLETS, HARD_WALLET_CAP)
+
+    daily = _load_daily()
+    if daily.get("scans", 0) >= DAILY_SCAN_CAP:
+        st.warning(
+            f"You have already run {daily['scans']} scans today on this app "
+            f"(soft cap is {DAILY_SCAN_CAP}). The cache will keep new scans fast, "
+            f"but heavy use could hit Streamlit's free-tier resource limits."
+        )
 
     if wallet.strip():
         seeds = {wallet.strip(): "seed"}
@@ -283,6 +352,8 @@ if submit:
     st.session_state.last_run = pd.Timestamp.utcnow().isoformat(timespec="seconds")
     # Persist so the page survives Safari backgrounding / tab kills
     _save_last_scan(all_results, edges, skipped, st.session_state.last_run)
+    # Bump daily counter
+    _bump_daily(len(all_results))
 
 # ---------- render ----------
 results = st.session_state.get("results", [])
@@ -467,14 +538,42 @@ d2.download_button(
     mime="text/csv", use_container_width=True,
 )
 
-if st.button("✕ Clear last scan", use_container_width=True):
-    try:
-        os.remove(LAST_SCAN_FILE)
-    except FileNotFoundError:
-        pass
-    for k in ("results", "edges", "skipped", "last_run"):
-        st.session_state.pop(k, None)
-    st.rerun()
+# --- Daily usage panel ---
+daily = _load_daily()
+cache_size_kb = 0
+try:
+    cache_size_kb = os.path.getsize(sc.CACHE_DB) // 1024
+except FileNotFoundError:
+    pass
+
+with st.expander("Free-tier usage / health"):
+    st.markdown(
+        f"- Scans today (UTC): **{daily.get('scans', 0)} / {DAILY_SCAN_CAP}** soft cap\n"
+        f"- Wallets scanned today: **{daily.get('wallets', 0)}**\n"
+        f"- Per-scan wallet cap: **{HARD_WALLET_CAP}**\n"
+        f"- Persistent cache file: **{cache_size_kb} KB**\n"
+        f"- Workers in use: graph={sc.GRAPH_WORKERS}, mistrack={sc.MISTRACK_WORKERS}\n"
+        f"- Cache wallets in memory: **{len(sc._mistrack_cache) if hasattr(sc, '_mistrack_cache') else 0}**\n"
+        f"\nStreamlit Cloud free tier: ~1 GB RAM, 1 CPU, ephemeral disk."
+        f" The cache file may be wiped on container restart; rerunning a scan rebuilds it."
+    )
+    if cache_size_kb > 50_000:  # 50 MB
+        st.warning("Cache file is getting large. Consider clearing it to free disk.")
+    cc1, cc2 = st.columns(2)
+    if cc1.button("✕ Clear last scan", use_container_width=True):
+        try:
+            os.remove(LAST_SCAN_FILE)
+        except FileNotFoundError:
+            pass
+        for k in ("results", "edges", "skipped", "last_run"):
+            st.session_state.pop(k, None)
+        st.rerun()
+    if cc2.button("✕ Clear scanner cache (DB)", use_container_width=True):
+        try:
+            os.remove(sc.CACHE_DB)
+        except FileNotFoundError:
+            pass
+        st.success("Cache DB removed. It will be recreated on next scan.")
 
 st.markdown(
     f"<div class='lastupd'>Last updated: {escape(str(st.session_state.get('last_run', '—')))}"

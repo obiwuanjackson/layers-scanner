@@ -36,13 +36,15 @@ TRONGRID_TXN_URL     = "https://api.trongrid.io/v1/accounts/{address}/transactio
 TRONGRID_ACCOUNT_URL = "https://api.trongrid.io/v1/accounts/{address}"
 
 # ── Tunable parameters ───────────────────────────────────────────
-MAX_LAYERS             = 4
-MAX_SENDERS_PER_WALLET = 20
-MAX_TOTAL_WALLETS      = 2000
-ACTIVITY_WINDOW_HOURS  = 60
-MIN_USDT_AMOUNT        = 5.0
-GRAPH_WORKERS          = 30    # parallel TronGrid fetch+qualify workers
-MISTRACK_WORKERS       = 10    # [OPT] raised; rate limiter enforces the floor globally
+# Tuned for Streamlit Community Cloud free tier (1 GB RAM, 1 CPU).
+# Override any of these with env vars at deploy time.
+MAX_LAYERS             = int(os.environ.get("MAX_LAYERS", "4"))
+MAX_SENDERS_PER_WALLET = int(os.environ.get("MAX_SENDERS_PER_WALLET", "20"))
+MAX_TOTAL_WALLETS      = int(os.environ.get("MAX_TOTAL_WALLETS", "800"))
+ACTIVITY_WINDOW_HOURS  = int(os.environ.get("ACTIVITY_WINDOW_HOURS", "60"))
+MIN_USDT_AMOUNT        = float(os.environ.get("MIN_USDT_AMOUNT", "5.0"))
+GRAPH_WORKERS          = int(os.environ.get("GRAPH_WORKERS", "12"))    # 1 CPU box, lowered from 30
+MISTRACK_WORKERS       = int(os.environ.get("MISTRACK_WORKERS", "6"))  # rate limiter is the real floor
 
 # [OPT-SESSION] Per-thread requests.Session reuses HTTP keep-alive connections,
 # saving ~20-50 ms of TCP+TLS handshake overhead per TronGrid request.
