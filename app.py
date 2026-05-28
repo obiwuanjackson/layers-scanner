@@ -188,6 +188,86 @@ st.markdown(
       @media (max-width: 640px) {
         div[data-testid="column"] { width: 100% !important; flex: 1 1 100% !important; }
       }
+
+      /* ---------- Result cards (mimicking scanner.html) ---------- */
+      .wlist { display: flex; flex-direction: column; gap: .55rem; margin-top: .4rem; }
+      .wcard {
+        background: #0d1117; border: 1px solid #1f2730; border-left: 3px solid #1f2730;
+        border-radius: 10px; padding: .65rem .75rem;
+      }
+      .wcard.has-mixer { border-left-color: #d985ff; background: linear-gradient(90deg,#1a0f23 0%,#0d1117 30%); }
+      .wcard.has-event { border-left-color: #ff5d6c; background: linear-gradient(90deg,#23101a 0%,#0d1117 30%); }
+
+      .wrow1 { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+      .layer-badge {
+        font-family: monospace; font-size: .68rem; letter-spacing: .08em;
+        padding: .12rem .45rem; border-radius: 999px;
+        background: #1f2730; color: #c9d8e3; border: 1px solid #2a323b;
+      }
+      .layer-badge.l0 { background: #003a40; color: #00ffe0; border-color: #006a72; }
+      .layer-badge.l1 { background: #1d2e44; color: #60a5fa; border-color: #2c4360; }
+      .layer-badge.l2 { background: #1d3a2e; color: #4ade80; border-color: #2c5742; }
+      .layer-badge.l3 { background: #3a311d; color: #ffb454; border-color: #5a4a2a; }
+      .layer-badge.l4 { background: #3a1d2a; color: #ff8aa5; border-color: #5a2a3e; }
+      .layer-badge.l5 { background: #3a1d3a; color: #d985ff; border-color: #5a2a5a; }
+
+      .wname { color: #c9d8e3; font-weight: 600; font-size: .85rem; }
+      .waddr {
+        font-family: monospace; font-size: .76rem; color: #8aa0b3;
+        background: #060a0f; padding: .12rem .45rem; border-radius: 6px;
+        border: 1px solid #1f2730; word-break: break-all;
+      }
+
+      .risk-badge {
+        font-family: monospace; font-size: .68rem; font-weight: 700; letter-spacing: .12em;
+        padding: .14rem .55rem; border-radius: 999px; text-transform: uppercase;
+      }
+      .risk-low      { background: #0e2d1f; color: #4ade80; border: 1px solid #1f5a3c; }
+      .risk-medium   { background: #3a311d; color: #ffb454; border: 1px solid #5a4a2a; }
+      .risk-high     { background: #3a151c; color: #ff5d6c; border: 1px solid #6a232e; }
+      .risk-unknown  { background: #1f2730; color: #8aa0b3; border: 1px solid #2a323b; }
+      .risk-error    { background: #3a151c; color: #ff5d6c; border: 1px solid #6a232e; font-style: italic; }
+
+      .score-wrap { display: flex; align-items: center; gap: .4rem; min-width: 90px; }
+      .score-bar-bg { flex: 1; height: 6px; background: #1f2730; border-radius: 3px; overflow: hidden; min-width: 50px; }
+      .score-bar-fill { height: 100%; border-radius: 3px; transition: width .2s; }
+      .score-num { font-family: monospace; font-size: .78rem; color: #c9d8e3; min-width: 28px; text-align: right; }
+
+      .wrow2 { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .5rem; }
+      .chip {
+        font-size: .65rem; padding: .15rem .45rem; border-radius: 6px;
+        background: #1f2730; color: #c9d8e3; border: 1px solid #2a323b;
+        line-height: 1.4;
+      }
+      .chip.aml      { background: #2a1a3a; color: #d985ff; border-color: #432a5a; }
+      .chip.exchange { background: #16223a; color: #60a5fa; border-color: #2c4360; }
+      .chip.dex      { background: #16322a; color: #4ade80; border-color: #1f5a3c; }
+      .chip.mixer    { background: #2a1037; color: #d985ff; border-color: #5a1f7a; font-weight: 700; }
+      .chip.nft      { background: #322a16; color: #ffb454; border-color: #5a4a2a; }
+      .chip.phishing  { background: #3a1a2a; color: #ff8aa5; border-color: #5a2a3e; }
+      .chip.ransom    { background: #3a151c; color: #ff5d6c; border-color: #6a232e; font-weight: 700; }
+      .chip.stealing  { background: #3a221c; color: #ff8b4a; border-color: #6a3e23; }
+      .chip.laundering{ background: #322a16; color: #ffb454; border-color: #5a4a2a; }
+      .chip-muted { color: #6b7886; font-style: italic; }
+      .chip-tiny  { font-size: .58rem; opacity: .8; margin-left: .25rem; }
+
+      .wmeta { color: #6b7886; font-size: .68rem; margin-top: .35rem; }
+      .wmeta b { color: #8aa0b3; font-weight: 600; }
+
+      .sent-chip {
+        font-family: monospace; font-size: .62rem; padding: .08rem .3rem;
+        background: #060a0f; border: 1px solid #1f2730; border-radius: 4px;
+        color: #8aa0b3; margin-right: .2rem;
+      }
+
+      .alert-pills {
+        display: flex; flex-wrap: wrap; gap: .35rem;
+        margin: .4rem 0 .2rem 0;
+      }
+      .alert-pill-label {
+        color: #6b7886; font-size: .62rem; letter-spacing: .12em;
+        text-transform: uppercase; align-self: center;
+      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -416,33 +496,39 @@ if not results:
 
 
 # Helpers for table cell contents
-def _platforms(r):
+PLATFORM_ICONS = {"exchange": "⇄", "dex": "◎", "mixer": "⬡", "nft": "◆"}
+EVENT_ICONS    = {"phishing": "🎣", "ransom": "💀", "stealing": "⚡", "laundering": "🌀"}
+
+
+def _short_addr(a: str) -> str:
+    if not a or len(a) <= 16:
+        return a or "—"
+    return f"{a[:8]}…{a[-6:]}"
+
+
+def _platforms_summary(r):
     use_p = r.get("use_platform", {}) or {}
     parts = []
     for k, v in use_p.items():
         if isinstance(v, dict) and v.get("count", 0) > 0:
             names = v.get("list") or []
-            tag = f"{k}:{','.join(names[:2])}" if names else f"{k}({v['count']})"
-            parts.append(tag)
-    return " | ".join(parts) if parts else "—"
+            parts.append(f"{k} {','.join(names[:2])}")
+    return " | ".join(parts)
 
 
-def _events(r):
+def _events_summary(r):
     mal = r.get("malicious_event", {}) or {}
     parts = []
     for k in ("phishing", "ransom", "stealing", "laundering"):
         v = mal.get(k, {}) or {}
-        c = v.get("count", 0)
-        if c > 0:
-            parts.append(f"{k}({c})")
-    return " | ".join(parts) if parts else "—"
+        if v.get("count", 0) > 0:
+            parts.append(f"{k}({v['count']})")
+    return " | ".join(parts)
 
 
-def _aml(r):
+def _aml_summary(r):
     d = r.get("detail_list") or []
-    if isinstance(d, list):
-        return ", ".join(map(str, d)) if d else "—"
-    return str(d) if d else "—"
+    return ", ".join(map(str, d)) if isinstance(d, list) and d else ""
 
 
 def _build_df(rows):
@@ -453,9 +539,9 @@ def _build_df(rows):
             "WALLET": r.get("address", ""),
             "RISK": str(r.get("risk_level", r.get("error", ""))).title(),
             "SCORE": r.get("score", ""),
-            "AML": _aml(r),
-            "PLATFORMS": _platforms(r),
-            "EVENTS": _events(r),
+            "AML": _aml_summary(r) or "-",
+            "PLATFORMS": _platforms_summary(r) or "-",
+            "EVENTS": _events_summary(r) or "-",
             "SENDS TO": r.get("sent_to", ""),
             "LAST_TX": r.get("last_tx", ""),
             "AMOUNT_USDT": r.get("amount_usdt"),
@@ -464,16 +550,157 @@ def _build_df(rows):
     ])
 
 
-# Layer tabs + filters
+def _build_card(r) -> str:
+    """Render one wallet result as a rich HTML card (mimics scanner.html row)."""
+    layer = r.get("layer", "?")
+    addr = r.get("address", "") or "—"
+    name = r.get("name", "") or "—"
+    risk_raw = r.get("error") and "error" or (r.get("risk_level") or "unknown")
+    risk_lo = str(risk_raw).lower()
+    risk_display = "ERR" if r.get("error") else str(r.get("risk_level") or "N/A").upper()
+
+    # Score
+    try:
+        score = float(r.get("score") or 0)
+    except (TypeError, ValueError):
+        score = 0.0
+    score_pct = min(max(score, 0), 100)
+    score_color = "#ff5d6c" if score >= 70 else ("#ffb454" if score >= 40 else "#4ade80")
+    score_display = f"{score:g}" if score > 0 else "—"
+
+    # Highlight stripe
+    plat = r.get("use_platform", {}) or {}
+    mal = r.get("malicious_event", {}) or {}
+    has_mixer = (plat.get("mixer", {}) or {}).get("count", 0) > 0
+    has_event = any((mal.get(k, {}) or {}).get("count", 0) > 0
+                    for k in ("phishing", "ransom", "stealing", "laundering"))
+    stripe_cls = "has-event" if has_event else ("has-mixer" if has_mixer else "")
+
+    # AML detail tags
+    aml_tags = "".join(
+        f"<span class='chip aml'>{escape(str(d))}</span>"
+        for d in (r.get("detail_list") or [])
+    )
+
+    # Platform chips
+    plat_chips = ""
+    for key in ("exchange", "dex", "mixer", "nft"):
+        block = plat.get(key, {}) or {}
+        c = block.get("count", 0)
+        if not c:
+            continue
+        names = block.get("list") or []
+        names_short = ", ".join(escape(str(n)) for n in names[:3])
+        overflow = f" +{c - 3}" if c > 3 else ""
+        names_html = f"<span class='chip-tiny'>{names_short}{overflow}</span>" if names_short else ""
+        plat_chips += (
+            f"<span class='chip {key}'>{PLATFORM_ICONS.get(key, '')} {key} ({c}){names_html}</span>"
+        )
+
+    # Event chips
+    event_chips = ""
+    for key in ("phishing", "ransom", "stealing", "laundering"):
+        block = mal.get(key, {}) or {}
+        c = block.get("count", 0)
+        if not c:
+            continue
+        names = block.get("list") or []
+        names_short = ", ".join(escape(str(n)) for n in names[:2])
+        overflow = f" +{c - 2}" if c > 2 else ""
+        names_html = f"<span class='chip-tiny'>{names_short}{overflow}</span>" if names_short else ""
+        event_chips += (
+            f"<span class='chip {key}'>{EVENT_ICONS.get(key, '')} {key} ({c}){names_html}</span>"
+        )
+
+    # sent_to (can be list of strings or string)
+    sent_to = r.get("sent_to") or []
+    if isinstance(sent_to, str):
+        sent_to = [s for s in sent_to.split(",") if s.strip()]
+    sent_chips = "".join(
+        f"<span class='sent-chip' title='{escape(s)}'>{escape(_short_addr(s))}</span>"
+        for s in sent_to[:6]
+    )
+    if len(sent_to) > 6:
+        sent_chips += f"<span class='sent-chip'>+{len(sent_to) - 6}</span>"
+
+    # Footer meta
+    last_tx = r.get("last_tx") or "—"
+    amount = r.get("amount_usdt")
+    amount_str = f"{amount:.2f}" if isinstance(amount, (int, float)) else "—"
+
+    chips_block = aml_tags + plat_chips + event_chips
+    if not chips_block:
+        chips_block = "<span class='chip chip-muted'>no alerts</span>"
+
+    return f"""
+<div class='wcard {stripe_cls}'>
+  <div class='wrow1'>
+    <span class='layer-badge l{layer}'>L{layer}</span>
+    <span class='wname'>{escape(name)}</span>
+    <span class='risk-badge risk-{risk_lo}'>{escape(risk_display)}</span>
+    <div class='score-wrap'>
+      <div class='score-bar-bg'><div class='score-bar-fill' style='width:{score_pct}%;background:{score_color}'></div></div>
+      <span class='score-num'>{escape(score_display)}</span>
+    </div>
+  </div>
+  <div style='margin-top:.35rem'><span class='waddr'>{escape(addr)}</span></div>
+  <div class='wrow2'>{chips_block}</div>
+  <div class='wmeta'>
+    <b>Last tx:</b> {escape(str(last_tx))} &nbsp;·&nbsp;
+    <b>Amount:</b> {amount_str} USDT
+    {f" &nbsp;·&nbsp; <b>Sends to:</b> {sent_chips}" if sent_chips else ""}
+  </div>
+</div>
+"""
+
+
+# Alert pill state lives in session_state
+if "active_alert" not in st.session_state:
+    st.session_state.active_alert = None
+
+
+def _matches_alert(r, active):
+    if not active:
+        return True
+    plat = r.get("use_platform", {}) or {}
+    mal = r.get("malicious_event", {}) or {}
+    if active == "has_any":
+        return ((plat.get("mixer", {}) or {}).get("count", 0) > 0
+                or any((mal.get(k, {}) or {}).get("count", 0) > 0
+                       for k in ("phishing", "ransom", "stealing", "laundering")))
+    if active == "mixer":
+        return (plat.get("mixer", {}) or {}).get("count", 0) > 0
+    return (mal.get(active, {}) or {}).get("count", 0) > 0
+
+
+# Alert filter pills (one row, persistent across tabs)
+st.markdown("<div class='alert-pill-label'>Profile filter</div>", unsafe_allow_html=True)
+ap_cols = st.columns(7)
+pill_defs = [
+    (None, "All"),
+    ("has_any", "⚠ Any"),
+    ("mixer", "⬡ Mixer"),
+    ("phishing", "🎣 Phishing"),
+    ("ransom", "💀 Ransom"),
+    ("stealing", "⚡ Stealing"),
+    ("laundering", "🌀 Launder"),
+]
+for col, (val, label) in zip(ap_cols, pill_defs):
+    active = st.session_state.active_alert == val
+    btn_label = f"● {label}" if active else label
+    if col.button(btn_label, key=f"pill-{val or 'none'}", use_container_width=True):
+        st.session_state.active_alert = val
+        st.rerun()
+
+
+# Layer tabs
 layers_present = sorted({r.get("layer", 0) for r in results})
 layer_tabs = ["All"] + [f"L{l}" for l in layers_present]
 tab_objs = st.tabs(layer_tabs)
 
 
 def _render_panel(rows, key_prefix):
-    # Stack search + risk filter vertically on mobile via Streamlit columns
-    # plus our CSS rule above that forces 100% width on small screens.
-    col_s, col_f = st.columns([2, 1])
+    col_s, col_f, col_sort = st.columns([2, 1, 1])
     with col_s:
         q = st.text_input("Search", key=f"{key_prefix}-search",
                           placeholder="wallet, name, platform, event")
@@ -483,6 +710,12 @@ def _render_panel(rows, key_prefix):
             ["All", "Low", "Medium", "High", "Unknown", "Error"],
             key=f"{key_prefix}-risk",
         )
+    with col_sort:
+        sort = st.selectbox(
+            "Sort by",
+            ["Layer", "Risk", "Score (high→low)", "Name"],
+            key=f"{key_prefix}-sort",
+        )
 
     filtered = rows
     if q.strip():
@@ -490,7 +723,7 @@ def _render_panel(rows, key_prefix):
         def _match(r):
             blob = " ".join([
                 str(r.get("address", "")), str(r.get("name", "")),
-                _platforms(r), _events(r), _aml(r),
+                _platforms_summary(r), _events_summary(r), _aml_summary(r),
             ]).lower()
             return ql in blob
         filtered = [r for r in filtered if _match(r)]
@@ -500,10 +733,31 @@ def _render_panel(rows, key_prefix):
             r for r in filtered
             if str(r.get("risk_level", r.get("error", ""))).lower() == rfl
         ]
+    filtered = [r for r in filtered if _matches_alert(r, st.session_state.active_alert)]
 
-    st.caption(f"{len(filtered)} row(s)")
-    df = _build_df(filtered)
-    st.dataframe(df, use_container_width=True, hide_index=True, height=420)
+    # Sort
+    risk_order = {"high": 0, "medium": 1, "low": 2, "unknown": 3, "error": 4, "": 5}
+    if sort == "Layer":
+        filtered.sort(key=lambda r: (r.get("layer", 99), r.get("name", "")))
+    elif sort == "Risk":
+        filtered.sort(key=lambda r: risk_order.get(str(r.get("risk_level", "")).lower(), 9))
+    elif sort.startswith("Score"):
+        filtered.sort(key=lambda r: -(float(r.get("score") or 0)))
+    elif sort == "Name":
+        filtered.sort(key=lambda r: (str(r.get("name", "")).lower(), r.get("layer", 99)))
+
+    st.caption(f"{len(filtered)} wallet(s)")
+    if not filtered:
+        st.info("No wallets match the current filters.")
+        return
+
+    # Render up to 200 cards on screen, paginate the rest with a button
+    CHUNK = 200
+    visible = filtered[:CHUNK]
+    cards_html = "<div class='wlist'>" + "".join(_build_card(r) for r in visible) + "</div>"
+    st.markdown(cards_html, unsafe_allow_html=True)
+    if len(filtered) > CHUNK:
+        st.caption(f"Showing first {CHUNK} of {len(filtered)}. Refine filters for more.")
 
 
 with tab_objs[0]:
