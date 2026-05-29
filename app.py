@@ -363,11 +363,42 @@ def log(msg: str):
 
 # ---------- scan ----------
 if submit:
+    # Immediate feedback so the user sees the click landed
+    st.toast("Scan started", icon="🚀")
+    # Drop previous results from the UI so it does not look frozen
+    st.session_state.results = []
+    st.session_state.edges = []
+    st.session_state.skipped = []
+    st.session_state.last_run = None
+
     sc.MAX_LAYERS = depth
     sc.ACTIVITY_WINDOW_HOURS = int(window_h)
     sc.MIN_USDT_AMOUNT = float(min_usdt)
     # Enforce hard cap regardless of scanner_core default
     sc.MAX_TOTAL_WALLETS = min(sc.MAX_TOTAL_WALLETS, HARD_WALLET_CAP)
+
+    # Reset rate-limiter state so a throttled prior run does not carry over
+    try:
+        with sc._trongrid_lock:
+            sc._trongrid_rate         = 12.0
+            sc._trongrid_min_interval = 1.0 / 12.0
+            sc._trongrid_429_streak   = 0
+            sc._trongrid_last_call    = 0.0
+        with sc._mistrack_lock:
+            sc._mistrack_rate            = sc.MISTRACK_RATE_FLOOR
+            sc._mistrack_min_interval    = 1.0 / sc.MISTRACK_RATE_FLOOR
+            sc._mistrack_429_streak      = 0
+            sc._mistrack_success_streak  = 0
+            sc._mistrack_last_call       = 0.0
+    except Exception:
+        pass
+
+    # Ensure DB writer thread is alive (in case it died after a prior run)
+    try:
+        if sc._db_writer_thread is None or not sc._db_writer_thread.is_alive():
+            sc._db_start_writer()
+    except Exception:
+        pass
 
     daily = _load_daily()
     if daily.get("scans", 0) >= DAILY_SCAN_CAP:
@@ -439,9 +470,14 @@ if submit:
         sc._mistrack_cache.clear()
     sc._load_from_db_into_memory()
 
-    wallet_meta, edges, skipped = sc.build_wallet_graph(
-        seeds, log_fn=log, scan_layer_fn=scan_layer_fn,
-    )
+    try:
+        wallet_meta, edges, skipped = sc.build_wallet_graph(
+            seeds, log_fn=log, scan_layer_fn=scan_layer_fn,
+        )
+    except Exception as e:
+        st.error(f"Scan failed: {e!r}")
+        log(f"Scan failed: {e!r}")
+        st.stop()
     log(f"Graph: {len(wallet_meta)} wallets, {len(edges)} edges, {len(skipped)} skipped.")
 
     all_results = []
@@ -471,6 +507,9 @@ if submit:
     _save_last_scan(all_results, edges, skipped, st.session_state.last_run)
     # Bump daily counter
     _bump_daily(len(all_results))
+    st.toast(f"Scan complete: {len(all_results)} wallets", icon="✅")
+    # Force a fresh rerun so the stats grid + cards repaint with new data
+    st.rerun()
 
 # ---------- render ----------
 results = st.session_state.get("results", [])
