@@ -1,4 +1,5 @@
 # app.py - Streamlit UI for Layers Scanner, mobile-first responsive
+import hmac
 import json
 import os
 import threading
@@ -272,6 +273,42 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# ---------- Auth gate ----------
+def _check_login(user: str, pw: str) -> bool:
+    want_user = st.secrets.get("APP_USER", "chimbi") if hasattr(st, "secrets") else "chimbi"
+    want_pw   = st.secrets.get("APP_PASS", "113511") if hasattr(st, "secrets") else "113511"
+    try:
+        return (
+            hmac.compare_digest(user.strip(), str(want_user))
+            and hmac.compare_digest(pw, str(want_pw))
+        )
+    except Exception:
+        return False
+
+if not st.session_state.get("auth_ok"):
+    st.markdown(
+        "<h1 class='title'>WALLET <span class='accent'>GRAPH</span> SCANNER</h1>"
+        "<div class='subcaption'>Sign in to continue</div>",
+        unsafe_allow_html=True,
+    )
+    with st.form("login", clear_on_submit=False):
+        u = st.text_input("User", autocomplete="username")
+        p = st.text_input("Password", type="password", autocomplete="current-password")
+        ok = st.form_submit_button("Sign in", use_container_width=True, type="primary")
+    if ok:
+        if _check_login(u, p):
+            st.session_state.auth_ok = True
+            st.rerun()
+        else:
+            st.error("Invalid credentials")
+    st.stop()
+
+with st.sidebar:
+    if st.button("Sign out", use_container_width=True):
+        st.session_state.clear()
+        st.rerun()
+# -------------------------------
 
 st.markdown(
     "<h1 class='title'>WALLET <span class='accent'>GRAPH</span> SCANNER</h1>"
