@@ -410,8 +410,9 @@ if submit:
 
     if wallet.strip():
         seeds = {wallet.strip(): "seed"}
+        log(f"Using manual seed: {wallet.strip()}")
     else:
-        log("Loading seed wallets from Google Sheet...")
+        log("Loading FRESH seed wallets from Google Sheet (CDN cache busted)...")
         db = sc.load_google_sheet()
         seeds = {}
         for _, row in db.iterrows():
@@ -419,7 +420,9 @@ if submit:
             n = str(row.get("NAME", "")).strip()
             if w:
                 seeds[w] = n
-        log(f"{len(seeds)} seed wallets loaded.")
+        log(f"{len(seeds)} seed wallets loaded from sheet:")
+        for i, (w, n) in enumerate(seeds.items(), 1):
+            log(f"  {i:>3}. {w}  ({n})")
 
     if not seeds:
         st.error("No seed wallets to scan.")

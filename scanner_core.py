@@ -404,9 +404,26 @@ usdt_contract = Contract(
 # ================================================================
 
 def load_google_sheet():
+    """
+    Always fetches a fresh copy of the sheet. Google's gviz CSV export is
+    aggressively CDN-cached, so we:
+      1) append a per-call cache-buster query param
+      2) send Cache-Control: no-cache headers
+      3) feed bytes straight into pandas (no on-disk pandas cache)
+    """
+    from io import StringIO
+    bust = int(time.time() * 1000)
+    url = f"{csv_url}&_cb={bust}"
+    headers = {
+        "Cache-Control": "no-cache, no-store, max-age=0",
+        "Pragma":        "no-cache",
+        "User-Agent":    f"layers-scanner/{bust}",
+    }
     try:
-        db = pd.read_csv(csv_url)
-        print("✅ Google Sheet loaded successfully.")
+        r = requests.get(url, headers=headers, timeout=15)
+        r.raise_for_status()
+        db = pd.read_csv(StringIO(r.text))
+        print(f"✅ Google Sheet loaded fresh ({len(db)} rows, cb={bust}).")
     except Exception as e:
         print(f"⚠️  Could not fetch Google Sheet ({e}), using fallback example.")
         db = pd.DataFrame({
