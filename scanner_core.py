@@ -44,7 +44,9 @@ MAX_TOTAL_WALLETS      = int(os.environ.get("MAX_TOTAL_WALLETS", "800"))
 ACTIVITY_WINDOW_HOURS  = int(os.environ.get("ACTIVITY_WINDOW_HOURS", "60"))
 MIN_USDT_AMOUNT        = float(os.environ.get("MIN_USDT_AMOUNT", "5.0"))
 GRAPH_WORKERS          = int(os.environ.get("GRAPH_WORKERS", "12"))    # 1 CPU box, lowered from 30
-MISTRACK_WORKERS       = int(os.environ.get("MISTRACK_WORKERS", "6"))  # rate limiter is the real floor
+# [OPT-5RPS] Bumped 6→8 so the 5 req/s rate limiter (not the worker count)
+# stays the binding constraint even when per-call latency is high.
+MISTRACK_WORKERS       = int(os.environ.get("MISTRACK_WORKERS", "8"))  # rate limiter is the real floor
 
 # [OPT-SESSION] Per-thread requests.Session reuses HTTP keep-alive connections,
 # saving ~20-50 ms of TCP+TLS handshake overhead per TronGrid request.
@@ -63,10 +65,12 @@ def _get_session() -> requests.Session:
 SKIP_KNOWN_LOW_RISK    = True
 
 # Floor for MistTrack interval recovery after 429 backoff [OPT-7]
-# [OPT] Raised from 1.0 → 3.0 req/s. MistTrack's free tier allows ~3 req/s
-# sustained. If you get 429s, lower this back toward 1.0.
-# Math: 300 wallets × 2 calls = 600 calls. At 1/s = 600s. At 3/s = 200s.
-MISTRACK_RATE_FLOOR    = 3.0   # req/s — tune down if you see 429 errors
+# [OPT-5RPS] Raised 3.0 → 5.0 req/s for the MistTrack Compliance Plan
+# (5 calls/s · 50,000 calls/day per key). If you ever downgrade the plan
+# or see sustained 429s, lower this back toward 1.0–3.0.
+# Math: each wallet costs 2 calls (risk_score + address_trace).
+#   300 wallets × 2 = 600 calls. At 1/s = 600s. At 3/s = 200s. At 5/s = 120s.
+MISTRACK_RATE_FLOOR    = 5.0   # req/s — Compliance Plan ceiling
 
 # ── [FEAT-1] Alert-gated layer expansion ─────────────────────────
 # From this layer number onwards, only wallets that carry at least
@@ -296,7 +300,7 @@ class RateLimiter:
             time.sleep(sleep_for)   # lock released during sleep
 
 trongrid_limiter = RateLimiter(rate=12, per=1.0)   # [OPT] raised from 6; TronGrid Pro allows 15/s
-mistrack_limiter = RateLimiter(rate=3,  per=1.0)   # [OPT] raised from 1; matches MISTRACK_RATE_FLOOR
+mistrack_limiter = RateLimiter(rate=5,  per=1.0)   # [OPT-5RPS] raised 3→5; matches MISTRACK_RATE_FLOOR (Compliance)
 
 # ── TronGrid rate-limit state ────────────────────────────────────
 _trongrid_lock         = threading.Lock()
@@ -751,7 +755,27 @@ def _mistrack_wait():
         time.sleep(wait)   # lock released during sleep
 
 
-def _mistrack_on_429(log_fn=print):
+def _parse_retry_after(resp) -> Optional[float]:
+    """
+    [OPT-5RPS] Extract MistTrack's authoritative retry hint.
+    MistTrack returns it in the JSON body ({"retry_after": <seconds>});
+    fall back to the standard HTTP Retry-After header if present.
+    """
+    if resp is None:
+        return None
+    try:
+        ra = resp.json().get("retry_after")
+        if ra is not None:
+            return float(ra)
+    except Exception:
+        pass
+    try:
+        return float(resp.headers.get("Retry-After"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _mistrack_on_429(log_fn=print, retry_after: Optional[float] = None):
     global _mistrack_rate, _mistrack_min_interval, _mistrack_429_streak, _mistrack_success_streak
     with _mistrack_lock:
         _mistrack_429_streak     += 1
@@ -761,11 +785,18 @@ def _mistrack_on_429(log_fn=print):
         streak   = _mistrack_429_streak
         interval = _mistrack_min_interval
         rate     = _mistrack_rate
-    backoff = min(interval * streak, 120.0)
+    # [OPT-5RPS] Honour the server-supplied retry_after when present;
+    # otherwise fall back to the previous interval×streak heuristic.
+    if retry_after is not None and retry_after >= 0:
+        backoff = min(float(retry_after), 120.0)
+        hint = f" (server retry_after={retry_after:.1f}s)"
+    else:
+        backoff = min(interval * streak, 120.0)
+        hint = ""
     log_fn(
         f"  ⚠️  MistTrack 429 (streak={streak}) — "
         f"auto-adjusted to {rate} req/s (interval={interval:.1f}s). "
-        f"Backing off {backoff:.1f}s..."
+        f"Backing off {backoff:.1f}s...{hint}"
     )
     time.sleep(backoff)
 
@@ -810,14 +841,25 @@ def _mistrack_get(url: str, log_fn=print, max_retries: int = 6) -> Optional[dict
         try:
             r = session.get(url, timeout=15)
             if r.status_code == 429:
-                _mistrack_on_429(log_fn=log_fn)
+                _mistrack_on_429(log_fn=log_fn, retry_after=_parse_retry_after(r))
                 continue
             r.raise_for_status()
+            data = r.json()
+            # [OPT-5RPS] MistTrack may also signal throttling with HTTP 200 +
+            # {"success": false, "msg": "ExceededRateLimit"/"ExceededDailyRateLimit"}.
+            # Treat those as rate limits (not data errors) and back off properly.
+            if (
+                isinstance(data, dict)
+                and data.get("success") is False
+                and "ratelimit" in str(data.get("msg", "")).replace(" ", "").lower()
+            ):
+                _mistrack_on_429(log_fn=log_fn, retry_after=data.get("retry_after"))
+                continue
             _mistrack_on_success()
-            return r.json()
+            return data
         except requests.exceptions.HTTPError as e:
             if e.response is not None and e.response.status_code == 429:
-                _mistrack_on_429(log_fn=log_fn)
+                _mistrack_on_429(log_fn=log_fn, retry_after=_parse_retry_after(e.response))
                 continue
             log_fn(f"  ⚠️  MistTrack HTTP error ({e}) for {url}")
             return None
