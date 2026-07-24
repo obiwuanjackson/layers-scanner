@@ -11,7 +11,13 @@ import streamlit as st
 
 # --- Resource-conscious limits for Streamlit Community Cloud free tier ---
 # 1 GB RAM, 1 CPU, ephemeral disk. Tuned for ~5 scans/day x ~500 wallets.
-HARD_WALLET_CAP = 800          # absolute ceiling per scan (overrides scanner_core if higher)
+HARD_WALLET_CAP = 800          # baseline ceiling per scan (depth <= 3)
+# Deep scans get a modest extra allowance so layers 4-6 have real width,
+# without letting the wallet count (and therefore the MistTrack bill and
+# the RAM footprint) run away on the free tier.
+DEEP_WALLET_BONUS = 150        # extra wallets allowed per layer beyond 3
+MAX_WALLET_CAP    = 1250       # absolute ceiling, protects the 1 GB tier
+DEFAULT_DEPTH     = 3          # stable slider default (see note at the slider)
 DAILY_SCAN_CAP  = 8            # soft cap; UI warns past this
 LAST_SCAN_FILE  = "last_scan.json"
 DAILY_FILE      = "daily_counter.json"
@@ -341,11 +347,30 @@ with st.form("scan"):
     )
     c1, c2, c3 = st.columns(3)
     with c1:
-        depth = st.slider("Depth", 1, 6, sc.MAX_LAYERS)
+        # Default must be a constant, not sc.MAX_LAYERS. The scan mutates
+        # that global, which changed the widget's identity on the next
+        # rerun and silently reset the slider.
+        depth = st.slider(
+            "Depth", 1, 6, DEFAULT_DEPTH, key="depth",
+            help=(
+                "Layers of senders to trace back. 4+ is supported and goes "
+                "deeper, but takes longer: the wallet allowance is split "
+                "across layers, so each individual layer is narrower."
+            ),
+        )
     with c2:
         window_h = st.number_input("Window (h)", 1, 720, sc.ACTIVITY_WINDOW_HOURS)
     with c3:
         min_usdt = st.number_input("Min USDT", 0.0, 1000.0, float(sc.MIN_USDT_AMOUNT))
+    gate_from = st.number_input(
+        "Alert gate from layer (0 = off)",
+        min_value=0, max_value=6, value=0, step=1,
+        help=(
+            "0 scans every layer fully up to Depth. Set N (e.g. 3) so that from "
+            "layer N onward only alert-flagged wallets expand to the next layer "
+            "— faster, follows only suspicious paths."
+        ),
+    )
     submit = st.form_submit_button("▶  Start scan", use_container_width=True)
 
 log_placeholder = st.empty()
@@ -374,8 +399,19 @@ if submit:
     sc.MAX_LAYERS = depth
     sc.ACTIVITY_WINDOW_HOURS = int(window_h)
     sc.MIN_USDT_AMOUNT = float(min_usdt)
-    # Enforce hard cap regardless of scanner_core default
-    sc.MAX_TOTAL_WALLETS = min(sc.MAX_TOTAL_WALLETS, HARD_WALLET_CAP)
+    # Alert gate: 0 (off) means scan every layer fully up to Depth. We set the
+    # threshold above MAX_LAYERS so the gate never pre-empts the chosen depth.
+    # A value >= 1 restores the gated behaviour from that layer onward.
+    sc.ALERT_GATE_FROM_LAYER = int(gate_from) if int(gate_from) >= 1 else depth + 1
+    # Depth-aware wallet cap. A flat 800 was exhausted by layers 1-2, which
+    # is why Depth 4+ never ran. Deeper scans get a bigger allowance, and
+    # scanner_core divides it across the layers actually requested.
+    # Assigned (not min'd against itself) so it cannot ratchet down across
+    # Streamlit reruns.
+    sc.MAX_TOTAL_WALLETS = min(
+        HARD_WALLET_CAP + max(0, depth - 3) * DEEP_WALLET_BONUS,
+        MAX_WALLET_CAP,
+    )
 
     # Reset rate-limiter state so a throttled prior run does not carry over
     try:
@@ -428,7 +464,19 @@ if submit:
         st.error("No seed wallets to scan.")
         st.stop()
 
-    log(f"Starting {depth}-layer scan over {len(seeds)} seed(s)...")
+    if depth >= 4:
+        # ~2 MistTrack calls per wallet at the 5 req/s plan ceiling.
+        est_min = round((sc.MAX_TOTAL_WALLETS * 2) / sc.MISTRACK_RATE_FLOOR / 60)
+        st.info(
+            f"Depth {depth}: up to {sc.MAX_TOTAL_WALLETS} wallets, "
+            f"roughly {est_min} min worst case. Set 'Alert gate from layer' "
+            f"to 3 to follow only flagged wallets and finish much faster."
+        )
+
+    log(
+        f"Starting {depth}-layer scan over {len(seeds)} seed(s) "
+        f"[wallet cap {sc.MAX_TOTAL_WALLETS}]..."
+    )
 
     interleaved: dict = {}
     interleaved_lock = threading.Lock()
@@ -883,7 +931,12 @@ with st.expander("Free-tier usage / health"):
     st.markdown(
         f"- Scans today (UTC): **{daily.get('scans', 0)} / {DAILY_SCAN_CAP}** soft cap\n"
         f"- Wallets scanned today: **{daily.get('wallets', 0)}**\n"
-        f"- Per-scan wallet cap: **{HARD_WALLET_CAP}**\n"
+        f"- Per-scan wallet cap: **{HARD_WALLET_CAP}** at depth ≤ 3, "
+        f"up to **{MAX_WALLET_CAP}** at depth 6 "
+        f"(+{DEEP_WALLET_BONUS} per extra layer)\n"
+        f"- Sender fan-out per layer: **{sc.FANOUT_BY_LAYER.get(1)}/"
+        f"{sc.FANOUT_BY_LAYER.get(2)}/{sc.FANOUT_BY_LAYER.get(3)}/"
+        f"{sc.FANOUT_DEEP}+** (L1/L2/L3/L4+)\n"
         f"- Persistent cache file: **{cache_size_kb} KB**\n"
         f"- Workers in use: graph={sc.GRAPH_WORKERS}, mistrack={sc.MISTRACK_WORKERS}\n"
         f"- Cache wallets in memory: **{len(sc._mistrack_cache) if hasattr(sc, '_mistrack_cache') else 0}**\n"

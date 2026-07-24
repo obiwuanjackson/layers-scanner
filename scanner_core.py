@@ -41,6 +41,30 @@ TRONGRID_ACCOUNT_URL = "https://api.trongrid.io/v1/accounts/{address}"
 MAX_LAYERS             = int(os.environ.get("MAX_LAYERS", "4"))
 MAX_SENDERS_PER_WALLET = int(os.environ.get("MAX_SENDERS_PER_WALLET", "20"))
 MAX_TOTAL_WALLETS      = int(os.environ.get("MAX_TOTAL_WALLETS", "800"))
+
+# ── [FEAT-2] Depth-safe budgeting ────────────────────────────────
+# Without these, sender fan-out is exponential (20^layer) and the flat
+# MAX_TOTAL_WALLETS cap is exhausted at layer 2-3, so any Depth above 3
+# silently did nothing. The wallet allowance is now divided across the
+# layers the user actually asked for, and fan-out narrows with depth.
+#
+# Cost per layer is therefore roughly constant instead of exploding,
+# which keeps a 6-layer scan in the same order of magnitude as a
+# 3-layer one rather than being impossible.
+
+# Floor so a very deep scan still has a usable frontier per layer.
+MIN_LAYER_ADD_BUDGET   = int(os.environ.get("MIN_LAYER_ADD_BUDGET", "40"))
+
+# Senders fetched per wallet, by layer. Deep layers are noisier and much
+# more numerous, so we look at fewer (and the highest-value) senders there.
+# Any layer not listed uses FANOUT_DEEP.
+FANOUT_BY_LAYER: dict = {1: 20, 2: 12, 3: 8}
+FANOUT_DEEP            = int(os.environ.get("FANOUT_DEEP", "6"))
+
+
+def fanout_for_layer(layer: int) -> int:
+    """Sender fetch limit for a given layer (tapers as depth increases)."""
+    return FANOUT_BY_LAYER.get(layer, FANOUT_DEEP)
 ACTIVITY_WINDOW_HOURS  = int(os.environ.get("ACTIVITY_WINDOW_HOURS", "60"))
 MIN_USDT_AMOUNT        = float(os.environ.get("MIN_USDT_AMOUNT", "5.0"))
 GRAPH_WORKERS          = int(os.environ.get("GRAPH_WORKERS", "12"))    # 1 CPU box, lowered from 30
@@ -78,6 +102,10 @@ MISTRACK_RATE_FLOOR    = 5.0   # req/s — Compliance Plan ceiling
 # the next layer.  Wallets without alerts are kept in the results
 # (they are real senders) but their senders are not explored.
 # Set to a value > MAX_LAYERS to disable the gate entirely.
+# NOTE: app.py overrides this per scan from the "Alert gate from layer" UI
+# control (0 = off, which sets it to MAX_LAYERS+1 so Depth reaches its full
+# selected layer). This module default only applies when scanner_core is used
+# standalone without the Streamlit UI.
 ALERT_GATE_FROM_LAYER  = 3
 
 # Case-insensitive substrings matched against every string in
@@ -299,11 +327,14 @@ class RateLimiter:
                 sleep_for = (1.0 - self._allowance) * (self._per / self._rate)
             time.sleep(sleep_for)   # lock released during sleep
 
-trongrid_limiter = RateLimiter(rate=12, per=1.0)   # [OPT] raised from 6; TronGrid Pro allows 15/s
+trongrid_limiter = RateLimiter(rate=12, per=1.0)   # [OPT-TG] free tier hard cap is 15qps; stay at 12 for headroom
 mistrack_limiter = RateLimiter(rate=5,  per=1.0)   # [OPT-5RPS] raised 3→5; matches MISTRACK_RATE_FLOOR (Compliance)
 
 # ── TronGrid rate-limit state ────────────────────────────────────
 _trongrid_lock         = threading.Lock()
+# [OPT-TG] TronGrid FREE tier: 15 qps + 100k req/day per key; exceeding 15 qps
+# returns 429 and suspends the key for 30s. Held at 12 (20% headroom) so bursts
+# never trip the suspension. The interval gate below makes 12/s a hard ceiling.
 _trongrid_rate         = 12.0
 _trongrid_min_interval = 1.0 / 12.0
 _trongrid_429_streak   = 0
@@ -662,12 +693,18 @@ def _prime_activity_from_txns(sender_addr: str, txns: list):
 # === HELPER: FETCH SENDERS WITH AMOUNTS =========================
 # ================================================================
 
-def fetch_incoming_senders(wallet_address: str, limit: int = MAX_SENDERS_PER_WALLET) -> list:
+def fetch_incoming_senders(wallet_address: str, limit: Optional[int] = None) -> list:
     """
     Fetch top senders AND [OPT-PRIME] pre-populate their activity cache
     in parallel, so qualify_sender never needs a separate TronGrid call
     for the activity check.
+
+    `limit` is resolved at call time, not at import time. The old default
+    argument was bound to MAX_SENDERS_PER_WALLET when the module loaded,
+    so runtime changes to that global had no effect.
     """
+    if limit is None:
+        limit = MAX_SENDERS_PER_WALLET
     sender_max = {}
     _pow_cache: dict = {}
     try:
@@ -705,9 +742,21 @@ def fetch_incoming_senders(wallet_address: str, limit: int = MAX_SENDERS_PER_WAL
     # [OPT-PRIME] For each sender not yet in activity cache, fetch their
     # outgoing txns in parallel threads — they would otherwise be fetched
     # one-by-one and serially inside qualify_sender.
+    #
+    # [OPT-PRIME2] Only prime senders that can survive qualify_sender's two
+    # free filters (amount >= MIN_USDT_AMOUNT and not a known CEX address).
+    # Sub-threshold / hard-CEX senders are rejected BEFORE the activity check
+    # ever runs, so priming them just burns TronGrid calls with no effect on
+    # results. At a 5-USDT floor this typically eliminates the majority of
+    # dust senders — the single biggest TronGrid cost in a scan.
+    min_amt = MIN_USDT_AMOUNT   # module global; app.py may set it at scan time
     uncached = []
     with _cache_lock:
-        for addr, _ in senders:
+        for addr, amt in senders:
+            if amt < min_amt:
+                continue
+            if addr in CEX_ADDRESSES:
+                continue
             if addr not in _activity_cache:
                 uncached.append(addr)
 
@@ -1195,13 +1244,14 @@ def qualify_sender(sender_addr: str, amount_usdt: float, layer: int) -> dict:
 def _fetch_and_qualify_for_receiver(
     receiver_addr: str,
     seen_addrs: frozenset,   # [OPT] snapshot taken once per layer, not per worker
-    layer: int
+    layer: int,
+    fanout: Optional[int] = None,   # [FEAT-2] per-layer sender limit
 ) -> list:
     """
     Fetches senders for one receiver AND qualifies each one.
     Runs entirely inside a worker thread — fetch + qualify in one shot.
     """
-    raw     = fetch_incoming_senders(receiver_addr)
+    raw     = fetch_incoming_senders(receiver_addr, limit=fanout)
     results = []
 
     for sender_addr, amount_usdt in raw:
@@ -1246,16 +1296,36 @@ def build_wallet_graph(
             }
             current_layer_wallets[addr] = name
 
+    # [FEAT-2] Spread the wallet allowance across the requested depth.
+    # Previously the whole MAX_TOTAL_WALLETS budget was consumed by layers
+    # 1-2, so the loop broke before ever reaching layer 4+.
+    log_fn(
+        f"📐 Budget: depth {MAX_LAYERS}, "
+        f"{MAX_TOTAL_WALLETS} wallets total, "
+        f"~{max(MIN_LAYER_ADD_BUDGET, (MAX_TOTAL_WALLETS - len(wallet_meta)) // max(1, MAX_LAYERS))}"
+        f" new wallets per layer"
+    )
+
     for layer in range(1, MAX_LAYERS + 1):
 
         if len(wallet_meta) >= MAX_TOTAL_WALLETS:
             log_fn(f"🛑 MAX_TOTAL_WALLETS ({MAX_TOTAL_WALLETS}) reached. Stopping expansion.")
             break
 
+        # [FEAT-2] Recomputed each layer so unspent allowance from a thin
+        # layer rolls forward instead of being wasted.
+        layers_left      = MAX_LAYERS - layer + 1
+        layer_add_budget = max(
+            MIN_LAYER_ADD_BUDGET,
+            (MAX_TOTAL_WALLETS - len(wallet_meta)) // max(1, layers_left),
+        )
+
+        fanout = fanout_for_layer(layer)
         log_fn(
             f"\n🔎 Layer {layer} — fetching+qualifying senders for "
             f"{len(current_layer_wallets)} wallet(s) in parallel "
-            f"[{len(wallet_meta)}/{MAX_TOTAL_WALLETS} total so far]"
+            f"[{len(wallet_meta)}/{MAX_TOTAL_WALLETS} total so far, "
+            f"fan-out {fanout}/wallet, budget {layer_add_budget}]"
         )
 
         next_layer_wallets = {}
@@ -1274,7 +1344,8 @@ def build_wallet_graph(
                     _fetch_and_qualify_for_receiver,
                     receiver_addr,
                     seen_snapshot,   # [OPT] frozenset instead of live dict
-                    layer
+                    layer,
+                    fanout,          # [FEAT-2] narrower fan-out at depth
                 ): receiver_addr
                 for receiver_addr in current_layer_wallets
             }
@@ -1301,9 +1372,19 @@ def build_wallet_graph(
                             pending[sender]["result"] = res
                         pending[sender]["receivers"].append(receiver_addr)
 
-        # Commit pending results
+        # Commit pending results.
+        # [FEAT-2] Highest-value senders first, so when the per-layer budget
+        # truncates the list we keep the biggest money movers rather than
+        # whichever thread happened to finish first.
+        pending_ranked = sorted(
+            pending.items(),
+            key=lambda kv: kv[1]["result"].get("amount_usdt", 0) or 0,
+            reverse=True,
+        )
+
         newly_added = []
-        for sender, entry in pending.items():
+        budget_hit  = False
+        for sender, entry in pending_ranked:
             if sender in wallet_meta:
                 continue
             res       = entry["result"]
@@ -1338,11 +1419,24 @@ def build_wallet_graph(
 
             if len(wallet_meta) >= MAX_TOTAL_WALLETS:
                 log_fn(f"🛑 MAX_TOTAL_WALLETS hit. Stopping further additions.")
+                budget_hit = True
+                break
+
+            # [FEAT-2] Per-layer budget keeps allowance for the deeper layers
+            # the user asked for instead of spending it all here.
+            if accepted >= layer_add_budget:
+                log_fn(
+                    f"   ✂️  Layer {layer} budget ({layer_add_budget}) reached — "
+                    f"keeping the top {accepted} by USDT value, "
+                    f"reserving the rest of the allowance for deeper layers."
+                )
+                budget_hit = True
                 break
 
         log_fn(
             f"   → Layer {layer} done: {accepted} accepted, "
             f"{total_candidates - accepted} skipped"
+            + (" (truncated)" if budget_hit else "")
         )
 
         # ── [FEAT-1] Interleaved MistTrack scan + alert gate ─────
