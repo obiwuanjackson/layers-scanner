@@ -575,10 +575,10 @@ results = st.session_state.get("results", [])
 edges = st.session_state.get("edges", [])
 skipped = st.session_state.get("skipped", [])
 
-# Alert-flagged (malicious) wallets in this scan. Reuses the scanner's own
-# alert logic; purely a view over results, scan data is never mutated.
-MALICIOUS_ADDRS = {
-    r.get("address", "") for r in results if sc.has_alert_flag(r)
+# MistTrack scores of this scan's wallets, used by the malicious-transfer
+# lookup (malicious = score > 70 OR blocked in tron scan). View-only.
+SCAN_SCORES = {
+    r.get("address", ""): r.get("score") for r in results if r.get("address")
 }
 
 
@@ -932,7 +932,9 @@ def _show_wallet_details(addr):
     with st.spinner("Looking up wallet…"):
         status = wi.get_block_status(addr, st.session_state.block_status_cache)
         mal = wi.get_last_malicious_transfer(
-            addr, MALICIOUS_ADDRS, st.session_state.maltx_cache
+            addr, SCAN_SCORES,
+            st.session_state.block_status_cache,
+            st.session_state.maltx_cache,
         )
 
     icon = {"BLOCKED": "🔒", "GOOD STANDINGS": "✅"}.get(status, "❓")
