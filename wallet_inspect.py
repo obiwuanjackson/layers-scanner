@@ -17,10 +17,25 @@ def get_block_status(addr: str, cache: dict) -> str:
     return cache[addr]
 
 
-def get_last_malicious_transfer(addr: str, malicious_set: set, cache: dict):
+def _is_malicious(cp: str, score_map: dict, block_cache: dict) -> bool:
+    """Malicious = MistTrack score > 70 OR blocked (isBlackListed) in tron scan.
+    Only wallets from the current scan results are considered; blocked status
+    is checked lazily (cached contract call) when the score is not decisive."""
+    if cp not in score_map:
+        return False
+    try:
+        if float(score_map[cp] or 0) > 70:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return get_block_status(cp, block_cache) == "BLOCKED"
+
+
+def get_last_malicious_transfer(addr: str, score_map: dict,
+                                block_cache: dict, cache: dict):
     """
-    Most recent USDT transfer of `addr` whose counterparty is a
-    malicious (alert-flagged) wallet from the current scan results.
+    Most recent USDT transfer of `addr` whose counterparty is malicious
+    (score > 70 or blocked) among the current scan's wallets.
     Returns dict {date, counterparty, direction, amount},
     None if no malicious transfer exists, or {"error": True} on failure.
     Cached per scan session; errors are not cached.
@@ -39,7 +54,7 @@ def get_last_malicious_transfer(addr: str, malicious_set: set, cache: dict):
         frm = tx.get("from", "")
         to = tx.get("to", "")
         counterparty = to if frm == addr else frm
-        if counterparty and counterparty in malicious_set:
+        if counterparty and _is_malicious(counterparty, score_map, block_cache):
             ts_ms = tx.get("block_timestamp")
             if ts_ms:
                 date = datetime.fromtimestamp(
