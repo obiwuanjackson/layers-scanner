@@ -904,34 +904,35 @@ def _render_panel(rows, key_prefix):
     # Render up to 200 cards on screen, paginate the rest with a button
     CHUNK = 200
     visible = filtered[:CHUNK]
-    cards_html = "<div class='wlist'>" + "".join(_build_card(r) for r in visible) + "</div>"
-    st.markdown(cards_html, unsafe_allow_html=True)
+    open_key = f"{key_prefix}-open"
+    for r in visible:
+        st.markdown(
+            "<div class='wlist'>" + _build_card(r) + "</div>",
+            unsafe_allow_html=True,
+        )
+        addr = r.get("address", "")
+        if not addr:
+            continue
+        is_open = st.session_state.get(open_key) == addr
+        if st.button(
+            "▲ Hide details" if is_open else "🔍 Details",
+            key=f"{key_prefix}-btn-{addr}",
+        ):
+            st.session_state[open_key] = None if is_open else addr
+            st.rerun()
+        if is_open:
+            _show_wallet_details(addr)
     if len(filtered) > CHUNK:
         st.caption(f"Showing first {CHUNK} of {len(filtered)}. Refine filters for more.")
-    _render_inspector(filtered, key_prefix)
 
 
-def _render_inspector(rows, key_prefix):
+def _show_wallet_details(addr):
     """On-click wallet details: block status + most recent malicious transfer.
-    Lookups run only when a wallet is selected and are cached per session."""
-    addr_names = {r.get("address", ""): r.get("name", "")
-                  for r in rows if r.get("address")}
-    sel = st.selectbox(
-        "🔍 Wallet details",
-        [""] + list(addr_names),
-        key=f"{key_prefix}-inspect",
-        format_func=lambda a: (
-            "Select a wallet…" if not a
-            else f"{_short_addr(a)} · {addr_names.get(a, '')}"
-        ),
-    )
-    if not sel:
-        return
-
+    Lookups run only for the clicked wallet and are cached per session."""
     with st.spinner("Looking up wallet…"):
-        status = wi.get_block_status(sel, st.session_state.block_status_cache)
+        status = wi.get_block_status(addr, st.session_state.block_status_cache)
         mal = wi.get_last_malicious_transfer(
-            sel, MALICIOUS_ADDRS, st.session_state.maltx_cache
+            addr, MALICIOUS_ADDRS, st.session_state.maltx_cache
         )
 
     icon = {"BLOCKED": "🔒", "GOOD STANDINGS": "✅"}.get(status, "❓")
