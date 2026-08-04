@@ -957,6 +957,11 @@ def _show_wallet_details(addr):
             f"`{_short_addr(mal['counterparty'])}`"
         )
 
+    st.link_button(
+        "↗ Open in MistTrack",
+        f"https://dashboard.misttrack.io/risk/USDT-TRC20/{addr}",
+    )
+
 
 with tab_objs[0]:
     _render_panel(results, "all")
