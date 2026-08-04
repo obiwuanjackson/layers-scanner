@@ -105,6 +105,7 @@ for k in ("TRONGRID_API_KEY", "MISTTRACK_API_KEY"):
         os.environ[k] = st.secrets[k]
 
 import scanner_core as sc
+import wallet_inspect as wi
 
 st.set_page_config(
     page_title="Wallet Graph Scanner",
@@ -339,6 +340,10 @@ if "started" not in st.session_state:
         st.session_state.edges = []
         st.session_state.last_run = None
 
+# Per-session lookup caches for the wallet inspector (block status + malicious tx)
+st.session_state.setdefault("block_status_cache", {})
+st.session_state.setdefault("maltx_cache", {})
+
 # ---------- controls ----------
 with st.form("scan"):
     wallet = st.text_input(
@@ -395,6 +400,9 @@ if submit:
     st.session_state.edges = []
     st.session_state.skipped = []
     st.session_state.last_run = None
+    # Fresh scan session: reset inspector lookup caches
+    st.session_state.block_status_cache = {}
+    st.session_state.maltx_cache = {}
 
     sc.MAX_LAYERS = depth
     sc.ACTIVITY_WINDOW_HOURS = int(window_h)
@@ -566,6 +574,12 @@ if submit:
 results = st.session_state.get("results", [])
 edges = st.session_state.get("edges", [])
 skipped = st.session_state.get("skipped", [])
+
+# Alert-flagged (malicious) wallets in this scan. Reuses the scanner's own
+# alert logic; purely a view over results, scan data is never mutated.
+MALICIOUS_ADDRS = {
+    r.get("address", "") for r in results if sc.has_alert_flag(r)
+}
 
 
 def _count_alerts(r):
@@ -827,7 +841,7 @@ tab_objs = st.tabs(layer_tabs)
 
 
 def _render_panel(rows, key_prefix):
-    col_s, col_f, col_sort = st.columns([2, 1, 1])
+    col_s, col_f, col_sort, col_w = st.columns([2, 1, 1, 1])
     with col_s:
         q = st.text_input("Search", key=f"{key_prefix}-search",
                           placeholder="wallet, name, platform, event")
@@ -843,8 +857,17 @@ def _render_panel(rows, key_prefix):
             ["Layer", "Risk", "Score (high→low)", "Name"],
             key=f"{key_prefix}-sort",
         )
+    with col_w:
+        # Per-layer view filter; keyed per panel so each layer is independent.
+        wtype = st.selectbox(
+            "Show",
+            ["All wallets", "Malicious only"],
+            key=f"{key_prefix}-wtype",
+        )
 
     filtered = rows
+    if wtype == "Malicious only":
+        filtered = [r for r in filtered if sc.has_alert_flag(r)]
     if q.strip():
         ql = q.strip().lower()
         def _match(r):
@@ -885,6 +908,53 @@ def _render_panel(rows, key_prefix):
     st.markdown(cards_html, unsafe_allow_html=True)
     if len(filtered) > CHUNK:
         st.caption(f"Showing first {CHUNK} of {len(filtered)}. Refine filters for more.")
+    _render_inspector(filtered, key_prefix)
+
+
+def _render_inspector(rows, key_prefix):
+    """On-click wallet details: block status + most recent malicious transfer.
+    Lookups run only when a wallet is selected and are cached per session."""
+    addr_names = {r.get("address", ""): r.get("name", "")
+                  for r in rows if r.get("address")}
+    sel = st.selectbox(
+        "🔍 Wallet details",
+        [""] + list(addr_names),
+        key=f"{key_prefix}-inspect",
+        format_func=lambda a: (
+            "Select a wallet…" if not a
+            else f"{_short_addr(a)} · {addr_names.get(a, '')}"
+        ),
+    )
+    if not sel:
+        return
+
+    with st.spinner("Looking up wallet…"):
+        status = wi.get_block_status(sel, st.session_state.block_status_cache)
+        mal = wi.get_last_malicious_transfer(
+            sel, MALICIOUS_ADDRS, st.session_state.maltx_cache
+        )
+
+    icon = {"BLOCKED": "🔒", "GOOD STANDINGS": "✅"}.get(status, "❓")
+    st.markdown(f"**Block status (USDT contract):** {icon} {status}")
+
+    if mal is None:
+        st.markdown(
+            "**Malicious transfers:** none found — no recent USDT transfer "
+            "of this wallet involves a flagged wallet from this scan."
+        )
+    elif mal.get("error"):
+        st.markdown("**Malicious transfers:** ⚠️ lookup failed, try again.")
+    else:
+        amount = (
+            f"{mal['amount']:.2f} USDT"
+            if isinstance(mal.get("amount"), (int, float)) else "—"
+        )
+        direction = "sent to" if mal["direction"] == "out" else "received from"
+        st.markdown(
+            f"**Most recent malicious transfer:** 🚨 {mal['date']} — "
+            f"{amount} {direction} flagged wallet "
+            f"`{_short_addr(mal['counterparty'])}`"
+        )
 
 
 with tab_objs[0]:
